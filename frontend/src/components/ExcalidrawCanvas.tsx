@@ -1,0 +1,170 @@
+'use client';
+
+import { useState, useRef, useCallback, useEffect } from 'react';
+import { Excalidraw } from '@excalidraw/excalidraw';
+import type { ExcalidrawImperativeAPI } from '@excalidraw/excalidraw/types/types';
+import type { ExcalidrawElement } from '@excalidraw/excalidraw/types/element/types';
+import AIDesignAPI from '@/lib/api';
+import type { SuggestionResponse, APIError } from '@/types/api';
+
+interface ExcalidrawCanvasProps {
+  onSuggestionReceived?: (suggestion: SuggestionResponse) => void;
+  onError?: (error: APIError) => void;
+  className?: string;
+}
+
+export default function ExcalidrawCanvas({ 
+  onSuggestionReceived, 
+  onError, 
+  className = "" 
+}: ExcalidrawCanvasProps) {
+  const [excalidrawAPI, setExcalidrawAPI] = useState<ExcalidrawImperativeAPI | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
+  const [lastElements, setLastElements] = useState<readonly ExcalidrawElement[]>([]);
+  const [suggestions, setSuggestions] = useState<SuggestionResponse | null>(null);
+  
+  // Ref to prevent too frequent API calls
+  const debounceTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const lastRequestTimeRef = useRef<number>(0);
+
+  const handleCanvasChange = useCallback(async (elements: readonly ExcalidrawElement[]) => {
+    // Debounce API calls to avoid flooding
+    if (debounceTimerRef.current) {
+      clearTimeout(debounceTimerRef.current);
+    }
+    
+    // Rate limiting - don't call API more than once every 2 seconds
+    const now = Date.now();
+    const timeSinceLastRequest = now - lastRequestTimeRef.current;
+    if (timeSinceLastRequest < 2000) {
+      return;
+    }
+
+    debounceTimerRef.current = setTimeout(async () => {
+      try {
+        // Skip if no significant changes
+        if (elements.length === lastElements.length && elements.length === 0) {
+          return;
+        }
+
+        setIsLoading(true);
+        lastRequestTimeRef.current = Date.now();
+
+        // Format elements for API
+        const formattedElements = AIDesignAPI.formatCanvasElements([...elements]);
+        const recentChanges = AIDesignAPI.detectChanges([...lastElements], [...elements]);
+
+        // Prepare API request
+        const request = {
+          canvas_elements: formattedElements,
+          recent_changes: recentChanges,
+          context: {
+            user_id: 'demo-user',
+            session_id: 'demo-session',
+            timestamp: new Date().toISOString()
+          }
+        };
+
+        // Get AI suggestion
+        const suggestion = await AIDesignAPI.getSuggestion(request);
+        
+        setSuggestions(suggestion);
+        setLastElements(elements);
+        
+        // Notify parent component
+        if (onSuggestionReceived) {
+          onSuggestionReceived(suggestion);
+        }
+
+        console.log('AI Suggestion received:', suggestion);
+
+      } catch (error) {
+        console.error('Error getting AI suggestion:', error);
+        if (onError) {
+          onError(error as APIError);
+        }
+      } finally {
+        setIsLoading(false);
+      }
+    }, 1500); // 1.5 second debounce
+
+  }, [lastElements, onSuggestionReceived, onError]);
+
+  // Health check on component mount
+  useEffect(() => {
+    const checkHealth = async () => {
+      try {
+        const health = await AIDesignAPI.checkHealth();
+        console.log('Backend health:', health);
+        
+        const suggestHealth = await AIDesignAPI.checkSuggestionHealth();
+        console.log('Suggestion service health:', suggestHealth);
+      } catch (error) {
+        console.error('Health check failed:', error);
+        if (onError) {
+          onError(error as APIError);
+        }
+      }
+    };
+
+    checkHealth();
+  }, [onError]);
+
+  return (
+    <div className={`relative w-full h-full ${className}`}>
+      {/* Loading indicator */}
+      {isLoading && (
+        <div className="absolute top-4 right-4 z-50 bg-blue-500 text-white px-3 py-1 rounded-lg text-sm flex items-center gap-2">
+          <div className="animate-spin w-4 h-4 border-2 border-white border-t-transparent rounded-full"></div>
+          Getting AI suggestion...
+        </div>
+      )}
+
+      {/* Suggestion display */}
+      {suggestions && suggestions.suggestion && (
+        <div className="absolute top-4 left-4 z-40 bg-white border border-gray-200 rounded-lg shadow-lg p-4 max-w-sm">
+          <div className="text-sm font-semibold text-gray-700 mb-2">💡 AI Suggestion</div>
+          <div className="text-xs text-gray-600 mb-2">{suggestions.reasoning}</div>
+          
+          {suggestions.suggestion.nodes.length > 0 && (
+            <div className="mb-2">
+              <div className="text-xs font-medium text-gray-500">Suggested components:</div>
+              {suggestions.suggestion.nodes.map((node, idx) => (
+                <div key={idx} className="text-xs text-blue-600">
+                  • {node.label} ({node.type})
+                </div>
+              ))}
+            </div>
+          )}
+          
+          {suggestions.reference && (
+            <a 
+              href={suggestions.reference} 
+              target="_blank" 
+              rel="noopener noreferrer"
+              className="text-xs text-blue-500 hover:underline"
+            >
+              📚 Learn more
+            </a>
+          )}
+        </div>
+      )}
+
+      {/* Excalidraw Canvas */}
+      <div className="w-full h-full">
+        <Excalidraw
+          excalidrawAPI={(api: ExcalidrawImperativeAPI) => setExcalidrawAPI(api)}
+          onChange={handleCanvasChange}
+          initialData={{
+            appState: {
+              theme: 'light',
+              viewBackgroundColor: '#fafafb',
+              gridSize: null,
+            },
+            scrollToContent: true,
+          }}
+        />
+      </div>
+    </div>
+  );
+}

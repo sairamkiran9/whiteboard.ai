@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Design Copilot - API Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+        .input-section {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+        textarea {
+            width: 100%;
+            height: 300px;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-family: monospace;
+            font-size: 12px;
+        }
+        button {
+            background: #007bff;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        button:hover {
+            background: #0056b3;
+        }
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        .response {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 4px;
+            border-left: 4px solid #28a745;
+            margin-top: 10px;
+        }
+        .error {
+            border-left-color: #dc3545;
+            background: #f8d7da;
+        }
+        .status {
+            margin-bottom: 10px;
+            font-weight: bold;
+        }
+        .health-check {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+        .health-status {
+            padding: 5px 10px;
+            border-radius: 4px;
+            font-size: 12px;
+        }
+        .healthy { background: #d4edda; color: #155724; }
+        .unhealthy { background: #f8d7da; color: #721c24; }
+    </style>
+</head>
+<body>
+    <h1>🎨 AI Design Copilot - API Test</h1>
+    
+    <div class="container">
+        <h2>Backend Health Check</h2>
+        <div class="health-check">
+            <button onclick="checkHealth()">Check Backend Health</button>
+            <div id="health-status"></div>
+        </div>
+    </div>
+
+    <div class="container">
+        <h2>Test Suggestion API</h2>
+        <div class="input-section">
+            <div>
+                <h3>Canvas Input (JSON)</h3>
+                <textarea id="canvasInput" placeholder='Enter canvas JSON here, e.g.:
+{
+  "canvas_elements": [
+    {"type": "rectangle", "text": "client app", "id": "client-1"},
+    {"type": "rectangle", "text": "database server", "id": "db-1"}
+  ],
+  "context": {"test": true}
+}'>{
+  "canvas_elements": [
+    {"type": "rectangle", "text": "client app", "id": "client-1"}
+  ],
+  "context": {"test": true}
+}</textarea>
+                <br><br>
+                <button onclick="getSuggestion()" id="suggestBtn">Get AI Suggestion</button>
+            </div>
+            
+            <div>
+                <h3>API Response</h3>
+                <div id="response"></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="container">
+        <h2>Predefined Test Cases</h2>
+        <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+            <button onclick="testBasicWeb()">Test: Basic Web App</button>
+            <button onclick="testApiGateway()">Test: API Gateway Pattern</button>
+            <button onclick="testCaching()">Test: Caching Layer</button>
+            <button onclick="testEmptyCanvas()">Test: Empty Canvas</button>
+            <button onclick="testLargePayload()">Test: Large Payload</button>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = 'http://localhost:8000';
+        
+        async function checkHealth() {
+            const statusEl = document.getElementById('health-status');
+            statusEl.innerHTML = 'Checking...';
+            
+            try {
+                const response = await fetch(`${API_BASE}/health`);
+                const data = await response.json();
+                
+                if (response.ok) {
+                    statusEl.innerHTML = `<span class="health-status healthy">✅ Backend Healthy - ${data.status}</span>`;
+                    
+                    // Also check suggestion service health
+                    const suggestHealth = await fetch(`${API_BASE}/api/v1/health`);
+                    const suggestData = await suggestHealth.json();
+                    statusEl.innerHTML += `<span class="health-status healthy">✅ Suggestions: ${suggestData.patterns_loaded} patterns loaded</span>`;
+                } else {
+                    statusEl.innerHTML = `<span class="health-status unhealthy">❌ Backend Error: ${response.status}</span>`;
+                }
+            } catch (error) {
+                statusEl.innerHTML = `<span class="health-status unhealthy">❌ Connection Failed: ${error.message}</span>`;
+            }
+        }
+        
+        async function getSuggestion() {
+            const input = document.getElementById('canvasInput').value;
+            const responseEl = document.getElementById('response');
+            const btn = document.getElementById('suggestBtn');
+            
+            // Validate JSON
+            let canvasData;
+            try {
+                canvasData = JSON.parse(input);
+            } catch (error) {
+                responseEl.innerHTML = `<div class="response error">Invalid JSON: ${error.message}</div>`;
+                return;
+            }
+            
+            // Show loading state
+            btn.disabled = true;
+            btn.textContent = 'Getting Suggestion...';
+            responseEl.innerHTML = '<div class="status">🔄 Requesting AI suggestion...</div>';
+            
+            try {
+                const response = await fetch(`${API_BASE}/api/v1/suggest`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(canvasData)
+                });
+                
+                const data = await response.json();
+                
+                if (response.ok) {
+                    displaySuccessResponse(data);
+                } else {
+                    displayErrorResponse(response.status, data);
+                }
+                
+            } catch (error) {
+                responseEl.innerHTML = `<div class="response error">
+                    <div class="status">❌ Connection Error</div>
+                    <p>${error.message}</p>
+                </div>`;
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Get AI Suggestion';
+            }
+        }
+        
+        function displaySuccessResponse(data) {
+            const responseEl = document.getElementById('response');
+            
+            let html = `<div class="response">
+                <div class="status">✅ Success</div>
+                <h4>Reasoning:</h4>
+                <p>${data.reasoning}</p>`;
+            
+            if (data.suggestion && data.suggestion.nodes && data.suggestion.nodes.length > 0) {
+                html += `<h4>Suggested Nodes:</h4><ul>`;
+                data.suggestion.nodes.forEach(node => {
+                    html += `<li><strong>${node.type}</strong>: ${node.label}</li>`;
+                });
+                html += `</ul>`;
+            }
+            
+            if (data.suggestion && data.suggestion.edges && data.suggestion.edges.length > 0) {
+                html += `<h4>Suggested Connections:</h4><ul>`;
+                data.suggestion.edges.forEach(edge => {
+                    html += `<li>${edge.from || edge.from_node} <strong>${edge.type}</strong> ${edge.to || edge.to_node}</li>`;
+                });
+                html += `</ul>`;
+            }
+            
+            if (data.reference) {
+                html += `<h4>Reference:</h4><a href="${data.reference}" target="_blank">${data.reference}</a>`;
+            }
+            
+            html += `<h4>Full Response:</h4>
+                <pre style="background:#f1f1f1;padding:10px;border-radius:4px;overflow:auto;">${JSON.stringify(data, null, 2)}</pre>
+            </div>`;
+            
+            responseEl.innerHTML = html;
+        }
+        
+        function displayErrorResponse(status, data) {
+            const responseEl = document.getElementById('response');
+            responseEl.innerHTML = `<div class="response error">
+                <div class="status">❌ Error ${status}</div>
+                <pre>${JSON.stringify(data, null, 2)}</pre>
+            </div>`;
+        }
+        
+        // Predefined test cases
+        function testBasicWeb() {
+            document.getElementById('canvasInput').value = JSON.stringify({
+                "canvas_elements": [
+                    {"type": "rectangle", "text": "mobile client", "id": "client-1"}
+                ],
+                "context": {"pattern": "basic_web"}
+            }, null, 2);
+        }
+        
+        function testApiGateway() {
+            document.getElementById('canvasInput').value = JSON.stringify({
+                "canvas_elements": [
+                    {"type": "rectangle", "text": "client app", "id": "client-1"},
+                    {"type": "rectangle", "text": "web server", "id": "server-1"}
+                ],
+                "context": {"pattern": "api_gateway"}
+            }, null, 2);
+        }
+        
+        function testCaching() {
+            document.getElementById('canvasInput').value = JSON.stringify({
+                "canvas_elements": [
+                    {"type": "rectangle", "text": "web server", "id": "server-1"},
+                    {"type": "rectangle", "text": "database", "id": "db-1"}
+                ],
+                "context": {"pattern": "caching"}
+            }, null, 2);
+        }
+        
+        function testEmptyCanvas() {
+            document.getElementById('canvasInput').value = JSON.stringify({
+                "canvas_elements": []
+            }, null, 2);
+        }
+        
+        function testLargePayload() {
+            const elements = [];
+            for (let i = 0; i < 101; i++) {
+                elements.push({"type": "rectangle", "text": `element-${i}`, "id": `elem-${i}`});
+            }
+            document.getElementById('canvasInput').value = JSON.stringify({
+                "canvas_elements": elements
+            }, null, 2);
+        }
+        
+        // Auto-check health on page load
+        window.onload = function() {
+            checkHealth();
+        };
+    </script>
+</body>
+</html>
