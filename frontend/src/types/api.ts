@@ -46,6 +46,7 @@ export interface SuggestionResponse {
 }
 
 export interface CanvasRequest {
+  session_id?: string;
   canvas_elements: ExcalidrawElement[];
   recent_changes?: any[];
   context?: Record<string, any>;
@@ -72,4 +73,10 @@ export interface HealthResponse {
   status: string;
   service?: string;
   patterns_loaded?: number;
+}
+
+export interface ProvidersResponse {
+  available_providers: string[];
+  current_provider: string | null;
+  provider_status: Record<string, boolean>;
 }

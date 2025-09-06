@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react';
 import dynamic from 'next/dynamic';
 import ErrorBoundary from '@/components/ErrorBoundary';
 import NotificationSystem, { useNotifications } from '@/components/NotificationSystem';
+import ProviderSelector from '@/components/ProviderSelector';
 import AIDesignAPI from '@/lib/api';
 import type { SuggestionResponse, APIError, HealthResponse } from '@/types/api';
 
@@ -27,6 +28,21 @@ function DesignCopilotApp() {
   const { showError, showSuccess, showNotification } = useNotifications();
   const [backendStatus, setBackendStatus] = useState<'checking' | 'connected' | 'error'>('checking');
   const [currentSuggestion, setCurrentSuggestion] = useState<SuggestionResponse | null>(null);
+  const [sessionId, setSessionId] = useState<string | null>(null);
+
+  // Generate or retrieve session ID
+  useEffect(() => {
+    let storedSessionId = localStorage.getItem('ai-design-session-id');
+    
+    if (!storedSessionId) {
+      // Generate new session ID
+      storedSessionId = `session-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+      localStorage.setItem('ai-design-session-id', storedSessionId);
+    }
+    
+    setSessionId(storedSessionId);
+    console.log('Session ID initialized:', storedSessionId);
+  }, []);
 
   useEffect(() => {
     // Check backend connectivity on app load
@@ -83,18 +99,43 @@ function DesignCopilotApp() {
             <span className="text-sm text-gray-500">GitHub Copilot for System Architecture</span>
           </div>
           
-          {/* Status indicator */}
-          <div className="flex items-center space-x-2">
-            <div className={`w-2 h-2 rounded-full ${
-              backendStatus === 'connected' ? 'bg-green-500' : 
-              backendStatus === 'error' ? 'bg-red-500' : 
-              'bg-yellow-500 animate-pulse'
-            }`}></div>
-            <span className="text-sm text-gray-600">
-              {backendStatus === 'connected' ? 'Backend Connected' :
-               backendStatus === 'error' ? 'Backend Error' :
-               'Connecting...'}
-            </span>
+          {/* Provider Selector and Status */}
+          <div className="flex items-center space-x-4">
+            {/* Provider Selector */}
+            <ProviderSelector onError={handleError} />
+            
+            {/* Session Info */}
+            {sessionId && (
+              <div className="flex items-center space-x-2">
+                <span className="text-xs text-gray-500">
+                  Session: {sessionId.slice(-8)}
+                </span>
+                <button
+                  onClick={() => {
+                    localStorage.removeItem('ai-design-session-id');
+                    window.location.reload();
+                  }}
+                  className="text-xs text-blue-500 hover:text-blue-700"
+                  title="Start new session"
+                >
+                  🔄
+                </button>
+              </div>
+            )}
+            
+            {/* Status indicator */}
+            <div className="flex items-center space-x-2">
+              <div className={`w-2 h-2 rounded-full ${
+                backendStatus === 'connected' ? 'bg-green-500' : 
+                backendStatus === 'error' ? 'bg-red-500' : 
+                'bg-yellow-500 animate-pulse'
+              }`}></div>
+              <span className="text-sm text-gray-600">
+                {backendStatus === 'connected' ? 'Backend Connected' :
+                 backendStatus === 'error' ? 'Backend Error' :
+                 'Connecting...'}
+              </span>
+            </div>
           </div>
         </div>
       </header>
@@ -119,6 +160,7 @@ function DesignCopilotApp() {
       {/* Main Canvas */}
       <div className="absolute inset-0 pt-16">
         <ExcalidrawCanvas
+          sessionId={sessionId}
           onSuggestionReceived={handleSuggestionReceived}
           onError={handleError}
           className="w-full h-full"

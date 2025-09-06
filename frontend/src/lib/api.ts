@@ -7,6 +7,7 @@ import type {
   CanvasRequest, 
   SuggestionResponse, 
   HealthResponse, 
+  ProvidersResponse,
   APIError 
 } from '@/types/api';
 
@@ -86,6 +87,30 @@ export class AIDesignAPI {
   }
 
   /**
+   * Get available LLM providers and their status
+   */
+  static async getProviders(): Promise<ProvidersResponse> {
+    try {
+      const response = await apiClient.get<ProvidersResponse>('/api/v1/providers');
+      return response.data;
+    } catch (error) {
+      throw error as APIError;
+    }
+  }
+
+  /**
+   * Switch the active LLM provider
+   */
+  static async switchProvider(provider: string): Promise<any> {
+    try {
+      const response = await apiClient.post('/api/v1/providers/switch', { provider });
+      return response.data;
+    } catch (error) {
+      throw error as APIError;
+    }
+  }
+
+  /**
    * Convert Excalidraw elements to API format
    * Extracts relevant information for pattern analysis
    */
@@ -104,7 +129,46 @@ export class AIDesignAPI {
   }
 
   /**
-   * Detect changes in canvas elements
+   * Check if there are significant changes between canvas states
+   */
+  static hasSignificantChanges(oldElements: any[], newElements: any[]): boolean {
+    if (oldElements.length !== newElements.length) {
+      return true;
+    }
+    
+    // Check for meaningful changes in elements
+    for (const newEl of newElements) {
+      const oldEl = oldElements.find(old => old.id === newEl.id);
+      
+      if (!oldEl) {
+        return true; // New element
+      }
+      
+      // Check for significant text changes (labels are important for AI analysis)
+      if ((oldEl.text || '').trim() !== (newEl.text || '').trim()) {
+        return true;
+      }
+      
+      // Check for significant position changes (>50px movement)
+      const positionThreshold = 50;
+      if (Math.abs((oldEl.x || 0) - (newEl.x || 0)) > positionThreshold ||
+          Math.abs((oldEl.y || 0) - (newEl.y || 0)) > positionThreshold) {
+        return true;
+      }
+      
+      // Check for significant size changes (>20px)
+      const sizeThreshold = 20;
+      if (Math.abs((oldEl.width || 0) - (newEl.width || 0)) > sizeThreshold ||
+          Math.abs((oldEl.height || 0) - (newEl.height || 0)) > sizeThreshold) {
+        return true;
+      }
+    }
+    
+    return false;
+  }
+
+  /**
+   * Detect specific changes in canvas elements
    */
   static detectChanges(oldElements: any[], newElements: any[]): any[] {
     const changes: any[] = [];
@@ -116,9 +180,35 @@ export class AIDesignAPI {
         changes.push({
           action: 'add',
           element_id: newEl.id,
-          element: newEl,
+          element: {
+            id: newEl.id,
+            type: newEl.type,
+            text: newEl.text || '',
+            x: newEl.x,
+            y: newEl.y
+          },
           timestamp: new Date().toISOString()
         });
+      } else {
+        // Check for modifications
+        const hasTextChange = (oldEl.text || '').trim() !== (newEl.text || '').trim();
+        const hasPositionChange = Math.abs((oldEl.x || 0) - (newEl.x || 0)) > 50 ||
+                                 Math.abs((oldEl.y || 0) - (newEl.y || 0)) > 50;
+        
+        if (hasTextChange || hasPositionChange) {
+          changes.push({
+            action: 'modify',
+            element_id: newEl.id,
+            changes: {
+              text: hasTextChange ? { old: oldEl.text, new: newEl.text } : undefined,
+              position: hasPositionChange ? { 
+                old: { x: oldEl.x, y: oldEl.y }, 
+                new: { x: newEl.x, y: newEl.y } 
+              } : undefined
+            },
+            timestamp: new Date().toISOString()
+          });
+        }
       }
     });
     

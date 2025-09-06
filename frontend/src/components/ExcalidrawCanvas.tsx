@@ -8,12 +8,14 @@ import AIDesignAPI from '@/lib/api';
 import type { SuggestionResponse, APIError } from '@/types/api';
 
 interface ExcalidrawCanvasProps {
+  sessionId?: string | null;
   onSuggestionReceived?: (suggestion: SuggestionResponse) => void;
   onError?: (error: APIError) => void;
   className?: string;
 }
 
 export default function ExcalidrawCanvas({ 
+  sessionId,
   onSuggestionReceived, 
   onError, 
   className = "" 
@@ -32,18 +34,21 @@ export default function ExcalidrawCanvas({
     if (debounceTimerRef.current) {
       clearTimeout(debounceTimerRef.current);
     }
-    
-    // Rate limiting - don't call API more than once every 2 seconds
-    const now = Date.now();
-    const timeSinceLastRequest = now - lastRequestTimeRef.current;
-    if (timeSinceLastRequest < 2000) {
-      return;
-    }
 
     debounceTimerRef.current = setTimeout(async () => {
       try {
-        // Skip if no significant changes
-        if (elements.length === lastElements.length && elements.length === 0) {
+        // Skip if no significant changes detected
+        const hasChanges = AIDesignAPI.hasSignificantChanges([...lastElements], [...elements]);
+        if (!hasChanges) {
+          console.log('No significant changes detected, skipping API call');
+          return;
+        }
+
+        // Rate limiting - don't call API more than once every 3 seconds for significant changes
+        const now = Date.now();
+        const timeSinceLastRequest = now - lastRequestTimeRef.current;
+        if (timeSinceLastRequest < 3000) {
+          console.log(`Rate limited: ${(3000 - timeSinceLastRequest) / 1000}s remaining`);
           return;
         }
 
@@ -54,14 +59,17 @@ export default function ExcalidrawCanvas({
         const formattedElements = AIDesignAPI.formatCanvasElements([...elements]);
         const recentChanges = AIDesignAPI.detectChanges([...lastElements], [...elements]);
 
+        console.log(`Calling API with ${formattedElements.length} elements and ${recentChanges.length} changes`);
+
         // Prepare API request
         const request = {
+          session_id: sessionId || undefined,
           canvas_elements: formattedElements,
           recent_changes: recentChanges,
           context: {
             user_id: 'demo-user',
-            session_id: 'demo-session',
-            timestamp: new Date().toISOString()
+            timestamp: new Date().toISOString(),
+            has_memory: !!sessionId
           }
         };
 
@@ -86,7 +94,7 @@ export default function ExcalidrawCanvas({
       } finally {
         setIsLoading(false);
       }
-    }, 1500); // 1.5 second debounce
+    }, 2000); // 2 second debounce for better UX
 
   }, [lastElements, onSuggestionReceived, onError]);
 
