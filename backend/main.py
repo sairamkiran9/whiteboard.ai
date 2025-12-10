@@ -102,6 +102,10 @@ The API works with a strict ontology of system components:
             "name": "suggestions",
             "description": "AI-powered architectural suggestion endpoints",
         },
+        {
+            "name": "providers",
+            "description": "LLM provider management endpoints",
+        },
     ],
     openapi_tags=[
         {
@@ -111,6 +115,10 @@ The API works with a strict ontology of system components:
         {
             "name": "suggestions", 
             "description": "Core AI suggestion functionality"
+        },
+        {
+            "name": "providers",
+            "description": "LLM provider configuration and switching"
         }
     ],
     debug=os.getenv("DEBUG", "False").lower() == "true"
@@ -119,7 +127,12 @@ The API works with a strict ontology of system components:
 # Configure CORS for frontend integration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],  # Next.js default port
+    allow_origins=[
+        "http://localhost:3000",  # Next.js default port
+        "http://localhost:3001",  # Alternative port
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:3001",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

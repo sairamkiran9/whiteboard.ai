@@ -44,11 +44,11 @@ export default function ExcalidrawCanvas({
           return;
         }
 
-        // Rate limiting - don't call API more than once every 3 seconds for significant changes
+        // Rate limiting - don't call API more than once every 10 seconds for significant changes
         const now = Date.now();
         const timeSinceLastRequest = now - lastRequestTimeRef.current;
-        if (timeSinceLastRequest < 3000) {
-          console.log(`Rate limited: ${(3000 - timeSinceLastRequest) / 1000}s remaining`);
+        if (timeSinceLastRequest < 10000) {
+          console.log(`Rate limited: ${(10000 - timeSinceLastRequest) / 1000}s remaining`);
           return;
         }
 
@@ -94,29 +94,15 @@ export default function ExcalidrawCanvas({
       } finally {
         setIsLoading(false);
       }
-    }, 2000); // 2 second debounce for better UX
+    }, 5000); // 5 second debounce to reduce API calls
 
   }, [lastElements, onSuggestionReceived, onError]);
 
-  // Health check on component mount
+  // Health check disabled to reduce network calls
+  // Health checks are now handled by the main app component
   useEffect(() => {
-    const checkHealth = async () => {
-      try {
-        const health = await AIDesignAPI.checkHealth();
-        console.log('Backend health:', health);
-        
-        const suggestHealth = await AIDesignAPI.checkSuggestionHealth();
-        console.log('Suggestion service health:', suggestHealth);
-      } catch (error) {
-        console.error('Health check failed:', error);
-        if (onError) {
-          onError(error as APIError);
-        }
-      }
-    };
-
-    checkHealth();
-  }, [onError]);
+    console.log('ExcalidrawCanvas initialized - health checks disabled for reduced network traffic');
+  }, []);
 
   return (
     <div className={`relative w-full h-full ${className}`}>

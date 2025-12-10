@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(/home/kiran/.claude/**)",
+      "WebFetch(domain:python.langchain.com)",
+      "Bash(source:*)",
+      "Bash(python test:*)",
+      "Bash(pytest:*)",
+      "Bash(pip install pytest pydantic python-dotenv pyyaml)",
+      "Bash(python -m pytest hld_agent/tests/ -v)",
+      "Bash(uv pip install:*)",
+      "Bash(python:*)",
+      "Bash(kill:*)",
+      "Bash(lsof:*)",
+      "Bash(curl:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

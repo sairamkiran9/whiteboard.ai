@@ -14,27 +14,42 @@ export default function ProviderSelector({ onError, className = "" }: ProviderSe
   const [isLoading, setIsLoading] = useState(false);
   const [isExpanded, setIsExpanded] = useState(false);
   const [isSwitching, setIsSwitching] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
 
-  // Load providers on component mount
+  // Initialize with default Groq provider (no API calls on mount)
   useEffect(() => {
-    const loadProviders = async () => {
-      try {
-        setIsLoading(true);
-        const providerData = await AIDesignAPI.getProviders();
-        setProviders(providerData);
-        console.log('Loaded providers:', providerData);
-      } catch (error) {
-        console.error('Failed to load providers:', error);
-        if (onError) {
-          onError(error as APIError);
-        }
-      } finally {
-        setIsLoading(false);
+    // Set default provider data without making API calls
+    const defaultProviders: ProvidersResponse = {
+      available_providers: ["groq", "openai", "anthropic"],
+      current_provider: "groq",
+      provider_status: {
+        "groq": true,
+        "openai": false,
+        "anthropic": false
       }
     };
+    
+    setProviders(defaultProviders);
+    setIsLoading(false);
+    console.log('Using default Groq provider (no API call)');
+  }, []);
 
-    loadProviders();
-  }, [onError]);
+  // Manual refresh providers (only when user requests it)
+  const refreshProviders = async () => {
+    try {
+      setIsRefreshing(true);
+      const providerData = await AIDesignAPI.getProviders();
+      setProviders(providerData);
+      console.log('Refreshed providers from API:', providerData);
+    } catch (error) {
+      console.error('Failed to refresh providers:', error);
+      if (onError) {
+        onError(error as APIError);
+      }
+    } finally {
+      setIsRefreshing(false);
+    }
+  };
 
   // Handle provider switching
   const handleProviderSwitch = async (provider: string) => {
@@ -42,6 +57,22 @@ export default function ProviderSelector({ onError, className = "" }: ProviderSe
       setIsSwitching(true);
       console.log(`Switching to provider: ${provider}`);
       
+      // For now, just update local state (offline mode)
+      // Real API switching can be enabled by uncommenting the API calls below
+      
+      if (providers) {
+        const updatedProviders = {
+          ...providers,
+          current_provider: provider
+        };
+        setProviders(updatedProviders);
+        console.log(`Switched to ${provider} (offline mode)`);
+        setIsExpanded(false);
+        return;
+      }
+      
+      // Uncomment below for real API switching:
+      /*
       const result = await AIDesignAPI.switchProvider(provider);
       
       if (result.success) {
@@ -59,6 +90,7 @@ export default function ProviderSelector({ onError, className = "" }: ProviderSe
           });
         }
       }
+      */
     } catch (error) {
       console.error('Error switching provider:', error);
       if (onError) {
@@ -150,10 +182,22 @@ export default function ProviderSelector({ onError, className = "" }: ProviderSe
           <div className="py-1">
             {/* Header */}
             <div className="px-3 py-2 border-b border-gray-100">
-              <h3 className="text-sm font-semibold text-gray-700">Available Providers</h3>
-              <p className="text-xs text-gray-500">
-                {providers.available_providers.length} providers configured
-              </p>
+              <div className="flex items-center justify-between">
+                <div>
+                  <h3 className="text-sm font-semibold text-gray-700">Available Providers</h3>
+                  <p className="text-xs text-gray-500">
+                    {providers.available_providers.length} providers configured (offline mode)
+                  </p>
+                </div>
+                <button
+                  onClick={refreshProviders}
+                  disabled={isRefreshing}
+                  className="text-xs bg-gray-100 hover:bg-gray-200 px-2 py-1 rounded flex items-center gap-1 disabled:opacity-50"
+                  title="Refresh from backend"
+                >
+                  {isRefreshing ? '⏳' : '🔄'} Sync
+                </button>
+              </div>
             </div>
 
             {/* Provider List */}
