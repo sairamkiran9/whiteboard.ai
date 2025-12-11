@@ -19,6 +19,7 @@ pip-delete-this-directory.txt
 # IDE
 .vscode/
 .idea/
+myenv/
 
 # OS
 .DS_Store

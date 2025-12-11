@@ -12,7 +12,8 @@
       "Bash(python:*)",
       "Bash(kill:*)",
       "Bash(lsof:*)",
-      "Bash(curl:*)"
+      "Bash(curl:*)",
+      "Bash(find:*)"
     ],
     "deny": [],
     "ask": []

@@ -29,6 +29,7 @@ function DesignCopilotApp() {
   const [backendStatus, setBackendStatus] = useState<'checking' | 'connected' | 'error'>('checking');
   const [currentSuggestion, setCurrentSuggestion] = useState<SuggestionResponse | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const [showGettingStarted, setShowGettingStarted] = useState(true);
 
   // Generate or retrieve session ID
   useEffect(() => {
@@ -42,6 +43,15 @@ function DesignCopilotApp() {
     
     setSessionId(storedSessionId);
     console.log('Session ID initialized:', storedSessionId);
+  }, []);
+
+  // Auto-hide getting started panel after 5 seconds
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setShowGettingStarted(false);
+    }, 5000);
+
+    return () => clearTimeout(timer);
   }, []);
 
   useEffect(() => {
@@ -141,21 +151,36 @@ function DesignCopilotApp() {
       </header>
 
       {/* Instructions panel */}
-      <div className="absolute top-16 left-4 z-30 bg-white rounded-lg shadow-lg p-4 max-w-sm">
-        <h2 className="font-semibold text-gray-800 mb-2">🚀 Getting Started</h2>
-        <ul className="text-sm text-gray-600 space-y-1">
-          <li>• Draw rectangles and label them (e.g., "client app", "database")</li>
-          <li>• Connect components with arrows</li>
-          <li>• Watch for AI suggestions in real-time</li>
-          <li>• AI recognizes common patterns and suggests improvements</li>
-        </ul>
-        
-        {backendStatus === 'error' && (
-          <div className="mt-3 p-2 bg-red-50 border border-red-200 rounded text-red-700 text-xs">
-            ⚠️ Backend not connected. Start the FastAPI server on port 8000.
+      {showGettingStarted && (
+        <div className="absolute top-16 left-4 z-30 bg-white rounded-lg shadow-lg p-4 max-w-sm transition-opacity duration-500">
+          <div className="flex items-center justify-between mb-2">
+            <h2 className="font-semibold text-gray-800">🚀 Getting Started</h2>
+            <button 
+              onClick={() => setShowGettingStarted(false)}
+              className="text-gray-400 hover:text-gray-600 text-lg leading-none"
+              title="Close"
+            >
+              ×
+            </button>
           </div>
-        )}
-      </div>
+          <ul className="text-sm text-gray-600 space-y-1">
+            <li>• Draw rectangles and label them (e.g., "client app", "database")</li>
+            <li>• Connect components with arrows</li>
+            <li>• Watch for AI suggestions in real-time</li>
+            <li>• AI recognizes common patterns and suggests improvements</li>
+          </ul>
+          
+          {backendStatus === 'error' && (
+            <div className="mt-3 p-2 bg-red-50 border border-red-200 rounded text-red-700 text-xs">
+              ⚠️ Backend not connected. Start the FastAPI server on port 8000.
+            </div>
+          )}
+          
+          <div className="mt-3 text-xs text-gray-400">
+            This panel will auto-hide in 5 seconds
+          </div>
+        </div>
+      )}
 
       {/* Main Canvas */}
       <div className="absolute inset-0 pt-16">

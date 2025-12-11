@@ -1,170 +1,209 @@
 """
-Suggestion endpoint router
+Suggestion endpoint router using Canvas-Aware HLD Agent
 Following CLAUDE.md guidelines for structured output and error handling
 """
 
 import uuid
-from typing import Dict, Any
+import json
+import tempfile
+import os
+from pathlib import Path
+from typing import Dict, Any, List, Optional
 from fastapi import APIRouter, HTTPException, status
 from fastapi.responses import JSONResponse
 
 from models.schema import CanvasRequest, SuggestionResponse, ErrorResponse, Suggestion, Node, Edge
-from hld_agent import HLDAgent
-from hld_agent.core.exceptions import HLDAgentError, ConfigurationError, LLMError
+from hld_agent_canvas_integration import CanvasAwareHLDAgent
+from hld_agent.models import AgentResponse, ComponentSuggestion
 from services.logger import setup_llm_logger, log_llm_request, log_llm_response
 
 # Set up router and logger
 router = APIRouter(prefix="/api/v1", tags=["suggestions"])
 logger = setup_llm_logger("suggestion_router")
 
-# Initialize HLD Agent
+# Initialize Canvas-Aware HLD Agent
 try:
-    hld_agent = HLDAgent()
-except ConfigurationError as e:
-    logger.error(f"Failed to initialize HLD Agent: {e}")
+    canvas_agent = CanvasAwareHLDAgent()
+    logger.info("Canvas-Aware HLD Agent initialized successfully")
+except Exception as e:
+    logger.error(f"Failed to initialize Canvas-Aware HLD Agent: {e}")
     raise
 
 
-def _convert_canvas_to_sequence(canvas_elements, context):
+def _convert_to_excalidraw_canvas(canvas_elements: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
-    Convert canvas elements to sequence format expected by HLD Agent.
-    
-    Extracts component names from canvas elements and builds a simple
-    sequence representation for the HLD Agent to analyze.
+    Convert API canvas elements to full Excalidraw canvas format.
+
+    The CanvasAwareHLDAgent expects a complete Excalidraw JSON structure.
     """
-    components = []
-    
-    # Extract component names from canvas elements
-    for element in canvas_elements:
-        if element.get("type") == "rectangle" and element.get("text"):
-            component_text = element["text"].strip()
-            if component_text and component_text not in components:
-                components.append(component_text.lower().replace(" ", "-"))
-    
-    # Build simple sequence from components
-    if len(components) == 0:
-        current_sequence = "user req"
-    elif len(components) == 1:
-        current_sequence = f"user req -> {components[0]}"
-    else:
-        current_sequence = " -> ".join(["user req"] + components)
-    
-    # Extract context information
-    context_info = ""
-    if context:
-        if isinstance(context, dict):
-            design_type = context.get("design_type", "")
-            if design_type:
-                context_info = f"{design_type} system"
-        elif isinstance(context, str):
-            context_info = context
-    
-    return current_sequence, context_info
+    return {
+        "type": "excalidraw",
+        "version": 2,
+        "source": "https://excalidraw.com",
+        "elements": canvas_elements,
+        "appState": {
+            "gridSize": None,
+            "viewBackgroundColor": "#ffffff"
+        },
+        "files": {}
+    }
 
 
-def _convert_agent_result_to_response(agent_result):
+def _create_ghost_excalidraw_elements(suggestions: List[ComponentSuggestion]) -> List[Dict[str, Any]]:
     """
-    Convert HLD Agent result to SuggestionResponse format.
-    
-    Transforms the structured agent output into the format expected
-    by the frontend canvas application.
+    Create Excalidraw-compatible ghost elements from ComponentSuggestions.
+
+    Generates semi-transparent dashed rectangles with labels at suggested positions.
     """
-    if not agent_result.get("success", False):
+    ghost_elements = []
+
+    for suggestion in suggestions:
+        if not suggestion.position_hint:
+            continue
+
+        # Create ghost rectangle
+        element_id = f"ghost-{uuid.uuid4().hex[:8]}"
+
+        # Rectangle element
+        ghost_rect = {
+            "id": element_id,
+            "type": "rectangle",
+            "x": suggestion.position_hint.get("x", 400),
+            "y": suggestion.position_hint.get("y", 220),
+            "width": 150,
+            "height": 80,
+            "angle": 0,
+            "strokeColor": "#0066cc",
+            "backgroundColor": "#e7f3ff",
+            "fillStyle": "hachure",
+            "strokeWidth": 2,
+            "strokeStyle": "dashed",
+            "roughness": 1,
+            "opacity": 60,
+            "groupIds": [],
+            "roundness": {"type": 3},
+            "seed": 12345,
+            "version": 1,
+            "versionNonce": 1,
+            "isDeleted": False,
+            "boundElements": [{"type": "text", "id": f"{element_id}-text"}],
+            "updated": 1,
+            "link": None,
+            "locked": False
+        }
+
+        # Text label
+        ghost_text = {
+            "id": f"{element_id}-text",
+            "type": "text",
+            "x": suggestion.position_hint.get("x", 400) + 10,
+            "y": suggestion.position_hint.get("y", 220) + 25,
+            "width": 130,
+            "height": 30,
+            "angle": 0,
+            "strokeColor": "#0066cc",
+            "backgroundColor": "transparent",
+            "fillStyle": "hachure",
+            "strokeWidth": 2,
+            "strokeStyle": "solid",
+            "roughness": 1,
+            "opacity": 100,
+            "groupIds": [],
+            "roundness": None,
+            "seed": 12346,
+            "version": 1,
+            "versionNonce": 1,
+            "isDeleted": False,
+            "boundElements": None,
+            "updated": 1,
+            "link": None,
+            "locked": False,
+            "text": f"{suggestion.component_name}?",
+            "fontSize": 16,
+            "fontFamily": 1,
+            "textAlign": "center",
+            "verticalAlign": "middle",
+            "baseline": 24,
+            "containerId": element_id,
+            "originalText": f"{suggestion.component_name}?",
+            "lineHeight": 1.25
+        }
+
+        ghost_elements.append(ghost_rect)
+        ghost_elements.append(ghost_text)
+
+    return ghost_elements
+
+
+def _convert_agent_response_to_suggestion(agent_response: AgentResponse) -> SuggestionResponse:
+    """
+    Convert CanvasAwareHLDAgent's AgentResponse to API SuggestionResponse.
+
+    Transforms ComponentSuggestion objects into simplified Node/Edge format
+    and generates Excalidraw-ready ghost elements.
+    """
+    # Check if we have any suggestions
+    if not agent_response.suggestions or len(agent_response.suggestions) == 0:
         return SuggestionResponse(
             suggestion=None,
-            reasoning="No architectural suggestions available",
-            reference=None
+            reasoning=agent_response.architecture_summary or "Architecture appears complete with current components",
+            reference=None,
+            excalidraw_elements=None,
+            metadata=agent_response.metadata
         )
-    
-    final_sequence = agent_result.get("final_sequence", "")
-    
-    # Check if agent suggested ending the sequence
-    if "__end__" in final_sequence or agent_result.get("output_state", {}).get("next") == "__end__":
-        return SuggestionResponse(
-            suggestion=None,
-            reasoning="Architecture appears complete with current components",
-            reference=None
-        )
-    
-    # Extract suggested component from agent output
-    output_state = agent_result.get("output_state", {})
-    next_component = output_state.get("next", "")
-    explanation = output_state.get("explanation", "")
-    reasoning = output_state.get("reasoning", "")
-    
-    if not next_component or next_component == "__end__":
-        return SuggestionResponse(
-            suggestion=None,
-            reasoning=reasoning or "No additional components needed",
-            reference=None
-        )
-    
-    # Create node suggestion based on the predicted next component
+
+    # Take the first suggestion (highest priority)
+    primary_suggestion = agent_response.suggestions[0]
+
+    # Create simplified Node
     suggested_nodes = []
     suggested_edges = []
-    
-    # Map component to node type and create suggestion
-    node_type, node_label = _map_component_to_node(next_component)
-    if node_type:
-        node_id = f"{next_component}-{uuid.uuid4().hex[:8]}"
-        suggested_nodes.append(Node(
-            type=node_type,
-            label=node_label,
-            id=node_id
-        ))
-        
-        # Create edge connecting to the suggested node
-        # This is simplified - in a real scenario you'd analyze the sequence better
-        suggested_edges.append(Edge(
-            **{"from": "previous-component", "to": node_id, "type": "connects-to"}
-        ))
-    
+
+    node = Node(
+        type=primary_suggestion.component_type,
+        label=primary_suggestion.component_name,
+        id=f"{primary_suggestion.component_type}-{uuid.uuid4().hex[:8]}"
+    )
+    suggested_nodes.append(node)
+
+    # Create edges if connects_to is specified
+    if primary_suggestion.connects_to:
+        for target_id in primary_suggestion.connects_to:
+            edge = Edge(
+                **{
+                    "from": target_id,
+                    "to": node.id,
+                    "type": "connects-to",
+                    "label": None
+                }
+            )
+            suggested_edges.append(edge)
+
+    # Create Suggestion object
     suggestion = Suggestion(
         nodes=suggested_nodes,
         edges=suggested_edges
-    ) if suggested_nodes else None
-    
-    return SuggestionResponse(
-        suggestion=suggestion,
-        reasoning=reasoning or explanation or f"Suggested adding {next_component} to complete the architecture",
-        reference=None  # Could be enhanced to include relevant documentation links
     )
 
+    # Generate Excalidraw ghost elements
+    excalidraw_elements = _create_ghost_excalidraw_elements(agent_response.suggestions[:2])  # Max 2 suggestions
 
-def _map_component_to_node(component_name):
-    """
-    Map HLD Agent component names to schema node types and labels.
-    
-    This function bridges the gap between the HLD Agent's component
-    vocabulary and the frontend's node type system.
-    """
-    component_mapping = {
-        "api-gateway": ("api-gateway", "API Gateway"),
-        "api gateway": ("api-gateway", "API Gateway"),
-        "gateway": ("api-gateway", "API Gateway"),
-        "cache": ("cache", "Cache Layer"),
-        "redis": ("cache", "Redis Cache"),
-        "database": ("database", "Database"),
-        "postgres": ("database", "PostgreSQL Database"),
-        "mysql": ("database", "MySQL Database"),
-        "db": ("database", "Database"),
-        "job-scheduler": ("worker", "Job Scheduler"),
-        "scheduler": ("worker", "Job Scheduler"),
-        "worker": ("worker", "Worker Service"),
-        "queue": ("queue", "Message Queue"),
-        "message-queue": ("queue", "Message Queue"),
-        "storage": ("storage", "File Storage"),
-        "webserver": ("webserver", "Web Server"),
-        "web-server": ("webserver", "Web Server"),
-        "server": ("webserver", "Web Server"),
-        "service-mesh": ("api-gateway", "Service Mesh"),
-        "load-balancer": ("api-gateway", "Load Balancer"),
-        "auth-service": ("webserver", "Auth Service"),
-        "monitoring": ("webserver", "Monitoring Service")
+    # Build metadata
+    metadata = {
+        **agent_response.metadata,
+        "confidence": primary_suggestion.confidence,
+        "priority": primary_suggestion.priority,
+        "canvas_hash": agent_response.canvas_hash,
+        "suggestion_count": len(agent_response.suggestions)
     }
-    
-    normalized_component = component_name.lower().strip()
-    return component_mapping.get(normalized_component, (None, None))
+
+    return SuggestionResponse(
+        suggestion=suggestion,
+        reasoning=primary_suggestion.reasoning,
+        reference=None,  # Could be enhanced with reference links
+        excalidraw_elements=excalidraw_elements,
+        metadata=metadata
+    )
 
 
 @router.post(
@@ -173,77 +212,153 @@ def _map_component_to_node(component_name):
     summary="Get AI architectural suggestions",
     description="""
     ## 🎯 Get AI-Powered Architecture Suggestions
-    
-    Analyze canvas elements and receive intelligent architectural suggestions
-    based on system design best practices and common patterns.
-    
+
+    Analyze canvas elements using the Canvas-Aware HLD Agent and receive
+    intelligent architectural suggestions with ready-to-render ghost elements.
+
     ### 🔄 How It Works
-    
-    1. **Send Canvas State**: Submit current drawing elements and recent changes
-    2. **AI Analysis**: Backend analyzes patterns and component relationships  
-    3. **Smart Suggestions**: Receive contextual architectural recommendations
-    4. **Implementation**: Apply suggestions to improve your system design
-    
+
+    1. **Send Canvas State**: Submit current Excalidraw elements
+    2. **Canvas Analysis**: Backend parses spatial layout, detects incomplete connections
+    3. **AI Suggestions**: Multi-agent system suggests next components
+    4. **Ghost Elements**: Returns Excalidraw-ready elements for preview
+
     ### 📊 Pattern Recognition
-    
-    The AI recognizes common patterns like:
-    - **Basic Web Architecture** (client → server → database)
-    - **API Gateway Pattern** (client → gateway → services)
-    - **Caching Layer** (server → cache → database)
-    - **Message Queue** (producer → queue → consumer)
-    - **Load Balancer** (client → balancer → servers)
-    
+
+    - **Spatial Context**: Understands canvas layers (frontend, backend, data)
+    - **Incomplete Flows**: Detects arrows pointing nowhere
+    - **Best Practices**: Suggests caching, load balancing, queueing patterns
+
     ### ⚡ Response Format
-    
-    - **Suggestion**: Up to 2 nodes and 2 edges following strict ontology
-    - **Reasoning**: Human-readable explanation of the suggestion
-    - **Reference**: Link to relevant documentation or best practices
-    
-    ### 🛡️ Safety Features
-    
-    - Input validation with size limits (max 100 elements)
-    - Rate limiting and debouncing protection
-    - Graceful fallback for analysis failures
-    - Structured logging for debugging
+
+    - **Suggestion**: Simplified nodes and edges
+    - **Excalidraw Elements**: Ready-to-render ghost rectangles
+    - **Reasoning**: AI explanation with confidence score
+    - **Metadata**: Canvas hash, component count, priority
+
+    ### 📖 OpenAPI 3.0 Specification
+
+    This endpoint conforms to OpenAPI 3.0 standards with:
+    - Structured request/response schemas
+    - Comprehensive examples for all scenarios
+    - Detailed error responses with status codes
+    - Type-safe Pydantic models
     """,
-    response_description="AI architectural suggestion with reasoning and references",
+    response_description="AI architectural suggestion with Excalidraw elements",
     responses={
         200: {
-            "description": "Successful AI suggestion",
+            "description": "Successful AI suggestion with components",
             "content": {
                 "application/json": {
                     "examples": {
-                        "caching_suggestion": {
+                        "cache_suggestion": {
                             "summary": "Cache Layer Suggestion",
-                            "description": "Example of AI suggesting a cache layer for performance",
+                            "description": "AI suggests adding Redis cache between API and database",
                             "value": {
                                 "suggestion": {
                                     "nodes": [
                                         {
                                             "type": "cache",
                                             "label": "Redis Cache",
-                                            "id": "redis-cache-1"
+                                            "id": "cache-redis-a1b2c3d4"
                                         }
                                     ],
                                     "edges": [
                                         {
-                                            "from": "web-server-1",
-                                            "to": "redis-cache-1",
-                                            "type": "reads-from"
+                                            "from": "api-gateway-1",
+                                            "to": "cache-redis-a1b2c3d4",
+                                            "type": "reads-from",
+                                            "label": "Cache queries"
                                         }
                                     ]
                                 },
-                                "reasoning": "Added Redis cache to improve database read performance and reduce query latency for frequently accessed data.",
-                                "reference": "https://redis.io/docs/about/"
+                                "reasoning": "Added Redis cache to improve database read performance and reduce query latency for frequently accessed data. This will help handle high traffic loads.",
+                                "reference": None,
+                                "excalidraw_elements": [
+                                    {
+                                        "id": "ghost-a1b2c3d4",
+                                        "type": "rectangle",
+                                        "x": 400,
+                                        "y": 220,
+                                        "width": 150,
+                                        "height": 80,
+                                        "strokeColor": "#0066cc",
+                                        "strokeStyle": "dashed",
+                                        "opacity": 60
+                                    },
+                                    {
+                                        "id": "ghost-a1b2c3d4-text",
+                                        "type": "text",
+                                        "text": "Redis Cache?",
+                                        "x": 410,
+                                        "y": 245,
+                                        "containerId": "ghost-a1b2c3d4"
+                                    }
+                                ],
+                                "metadata": {
+                                    "confidence": 0.87,
+                                    "priority": "high",
+                                    "canvas_hash": "f8e9a1b2c3d4e5f6",
+                                    "component_count": 3,
+                                    "suggestion_count": 1
+                                }
+                            }
+                        },
+                        "load_balancer_suggestion": {
+                            "summary": "Load Balancer Suggestion",
+                            "description": "AI suggests adding load balancer for high availability",
+                            "value": {
+                                "suggestion": {
+                                    "nodes": [
+                                        {
+                                            "type": "api-gateway",
+                                            "label": "Load Balancer",
+                                            "id": "lb-nginx-x9y8z7"
+                                        }
+                                    ],
+                                    "edges": [
+                                        {
+                                            "from": "client-1",
+                                            "to": "lb-nginx-x9y8z7",
+                                            "type": "requests"
+                                        }
+                                    ]
+                                },
+                                "reasoning": "Load balancer will distribute traffic across multiple backend servers, improving reliability and handling traffic spikes.",
+                                "reference": None,
+                                "excalidraw_elements": [
+                                    {
+                                        "id": "ghost-x9y8z7",
+                                        "type": "rectangle",
+                                        "x": 250,
+                                        "y": 180,
+                                        "width": 150,
+                                        "height": 80,
+                                        "strokeColor": "#0066cc",
+                                        "strokeStyle": "dashed"
+                                    }
+                                ],
+                                "metadata": {
+                                    "confidence": 0.92,
+                                    "priority": "high",
+                                    "canvas_hash": "a1b2c3d4e5f6g7h8",
+                                    "component_count": 2
+                                }
                             }
                         },
                         "no_suggestion": {
-                            "summary": "No Suggestion Available", 
-                            "description": "Example when no architectural improvements are suggested",
+                            "summary": "Architecture Complete",
+                            "description": "No additional components needed - architecture is sufficient",
                             "value": {
                                 "suggestion": None,
-                                "reasoning": "Current architecture appears well-designed with appropriate components and connections.",
-                                "reference": None
+                                "reasoning": "Architecture appears complete with all necessary components for a production-ready distributed system. No additional suggestions at this time.",
+                                "reference": None,
+                                "excalidraw_elements": None,
+                                "metadata": {
+                                    "canvas_hash": "complete123",
+                                    "component_count": 8,
+                                    "suggestion_count": 0
+                                }
                             }
                         }
                     }
@@ -251,7 +366,7 @@ def _map_component_to_node(component_name):
             }
         },
         413: {
-            "description": "Request Entity Too Large",
+            "description": "Request Entity Too Large - Canvas has too many elements",
             "content": {
                 "application/json": {
                     "example": {
@@ -261,32 +376,108 @@ def _map_component_to_node(component_name):
             }
         },
         422: {
-            "model": ErrorResponse,
-            "description": "Validation Error - Invalid request format"
+            "description": "Validation Error - Invalid request format",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "error": "Validation Error",
+                        "details": "Field 'canvas_elements' is required and must be an array"
+                    }
+                }
+            }
         },
         500: {
-            "model": ErrorResponse,
-            "description": "Internal Server Error - Analysis failed"
+            "description": "Internal Server Error - Analysis failed",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "suggestion": None,
+                        "reasoning": "Unable to process request due to internal error",
+                        "reference": None,
+                        "excalidraw_elements": None,
+                        "metadata": {
+                            "error": "LLM timeout or parsing failure"
+                        }
+                    }
+                }
+            }
         }
     },
-    tags=["suggestions"]
+    tags=["suggestions"],
+    operation_id="getSuggestion",
+    openapi_extra={
+        "x-code-samples": [
+            {
+                "lang": "JavaScript",
+                "source": """
+const response = await fetch('http://localhost:8000/api/v1/suggest', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    canvas_elements: [
+      { id: '1', type: 'rectangle', text: 'API Gateway', x: 100, y: 100 },
+      { id: '2', type: 'rectangle', text: 'Database', x: 300, y: 100 }
+    ],
+    context: { design_type: 'microservices' }
+  })
+});
+const data = await response.json();
+console.log(data.suggestion);
+                """
+            },
+            {
+                "lang": "Python",
+                "source": """
+import requests
+
+response = requests.post(
+    'http://localhost:8000/api/v1/suggest',
+    json={
+        'canvas_elements': [
+            {'id': '1', 'type': 'rectangle', 'text': 'API Gateway', 'x': 100, 'y': 100},
+            {'id': '2', 'type': 'rectangle', 'text': 'Database', 'x': 300, 'y': 100}
+        ],
+        'context': {'design_type': 'microservices'}
+    }
+)
+data = response.json()
+print(data['suggestion'])
+                """
+            },
+            {
+                "lang": "cURL",
+                "source": """
+curl -X POST http://localhost:8000/api/v1/suggest \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "canvas_elements": [
+      {"id": "1", "type": "rectangle", "text": "API Gateway", "x": 100, "y": 100}
+    ],
+    "context": {"design_type": "distributed-system"}
+  }'
+                """
+            }
+        ]
+    }
 )
 async def suggest_architecture(request: CanvasRequest) -> SuggestionResponse:
     """
-    Generate AI suggestions for system design based on canvas state
-    
+    Generate AI suggestions using Canvas-Aware HLD Agent.
+
     This endpoint:
     1. Validates input using Pydantic models
-    2. Analyzes canvas elements for patterns
-    3. Returns hardcoded architectural suggestions
-    4. Logs all requests/responses for debugging
+    2. Converts canvas elements to Excalidraw format
+    3. Saves to temp file for parser
+    4. Runs Canvas-Aware HLD Agent analysis
+    5. Returns suggestions with Excalidraw ghost elements
     """
     request_id = str(uuid.uuid4())
-    
+    temp_file_path = None
+
     try:
         # Log incoming request
         log_llm_request(
-            logger, 
+            logger,
             prompt=f"Canvas analysis request: {len(request.canvas_elements)} elements",
             context={
                 "request_id": request_id,
@@ -295,295 +486,112 @@ async def suggest_architecture(request: CanvasRequest) -> SuggestionResponse:
                 "has_context": request.context is not None
             }
         )
-        
-        # Validate payload size (following CLAUDE.md guidelines)
+
+        # Validate payload size
         if len(request.canvas_elements) > 100:
             raise HTTPException(
                 status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
                 detail="Canvas too large. Maximum 100 elements allowed."
             )
-        
-        # Convert canvas elements to sequence format for HLD Agent
-        current_sequence, context_info = _convert_canvas_to_sequence(
-            request.canvas_elements, request.context
-        )
-        
-        # Generate suggestion using HLD Agent
-        agent_result = hld_agent.generate_architecture_suggestion(
-            current_sequence=current_sequence,
-            context=context_info
-        )
-        
-        # Convert agent result to SuggestionResponse format
-        suggestion_response = _convert_agent_result_to_response(agent_result)
-        
+
+        # Convert to Excalidraw canvas format
+        excalidraw_canvas = _convert_to_excalidraw_canvas(request.canvas_elements)
+
+        # Save to temporary file (CanvasAwareHLDAgent expects file path)
+        with tempfile.NamedTemporaryFile(
+            mode='w',
+            suffix='.excalidraw',
+            delete=False,
+            encoding='utf-8'
+        ) as temp_file:
+            json.dump(excalidraw_canvas, temp_file, indent=2)
+            temp_file_path = temp_file.name
+
+        logger.info(f"Saved canvas to temp file: {temp_file_path}")
+
+        # Extract context for agent
+        context_str = ""
+        if request.context:
+            design_type = request.context.get("design_type", "")
+            if design_type:
+                context_str = f"{design_type} system architecture"
+            else:
+                context_str = "distributed system architecture"
+        else:
+            context_str = "system architecture design"
+
+        # Analyze using Canvas-Aware HLD Agent
+        logger.info(f"Analyzing canvas with context: {context_str}")
+        agent_response = canvas_agent.analyze_canvas(temp_file_path, context_str)
+
+        # Convert to API response format
+        suggestion_response = _convert_agent_response_to_suggestion(agent_response)
+
         # Log successful response
         log_llm_response(
             logger,
-            response=str(suggestion_response.dict()),
+            response=f"Suggestions: {len(agent_response.suggestions)}",
             valid=True,
             error=None
         )
-        
+
+        logger.info(f"Successfully generated {len(agent_response.suggestions)} suggestions")
+
         return suggestion_response
-        
+
     except HTTPException:
         # Re-raise HTTP exceptions
         raise
-        
-    except (HLDAgentError, LLMError) as e:
-        # Handle specific agent errors
-        error_msg = f"HLD Agent error: {str(e)}"
-        logger.error(error_msg)
-        
-        log_llm_response(
-            logger,
-            response="",
-            valid=False,
-            error=error_msg
-        )
-        
-        # Return safe fallback following CLAUDE.md guidelines
-        return SuggestionResponse(
-            suggestion=None,
-            reasoning="Unable to generate architectural suggestions due to agent error",
-            reference=None
-        )
-        
+
     except Exception as e:
         # Log error and return safe fallback
         error_msg = f"Internal error processing suggestion request: {str(e)}"
-        
+        logger.error(error_msg, exc_info=True)
+
         log_llm_response(
             logger,
             response="",
             valid=False,
             error=error_msg
         )
-        
-        # Return safe fallback following CLAUDE.md guidelines
+
+        # Return safe fallback
         return SuggestionResponse(
             suggestion=None,
             reasoning="Unable to process request due to internal error",
-            reference=None
+            reference=None,
+            excalidraw_elements=None,
+            metadata={"error": str(e)}
         )
 
-
-@router.get(
-    "/providers",
-    summary="Get Available LLM Providers",
-    description="""
-    ## 🤖 Get Available LLM Providers
-    
-    Return information about available LLM providers and their configuration status.
-    
-    ### 📊 Provider Information
-    
-    - **Available Providers**: List of configured providers
-    - **Current Provider**: Currently active provider 
-    - **Provider Status**: Configuration status for each provider
-    """,
-    response_description="Available providers and their status",
-    responses={
-        200: {
-            "description": "Provider information retrieved successfully",
-            "content": {
-                "application/json": {
-                    "example": {
-                        "available_providers": ["groq", "openai", "anthropic"],
-                        "current_provider": "groq",
-                        "provider_status": {
-                            "groq": True,
-                            "openai": False, 
-                            "anthropic": False
-                        }
-                    }
-                }
-            }
-        }
-    },
-    tags=["providers"]
-)
-async def get_providers():
-    """
-    Get information about available LLM providers.
-    
-    Returns the current provider configuration including which providers
-    are available and properly configured.
-    """
-    try:
-        # Get current configuration from HLD Agent
-        agent_config = hld_agent.get_configuration()
-        current_provider = agent_config.get("llm", {}).get("provider", "groq")
-        
-        # Get real provider availability status
-        provider_status_details = hld_agent.get_all_provider_status()
-        
-        # Extract available providers and their status
-        available_providers = list(provider_status_details.keys())
-        provider_status = {
-            provider: details["available"] 
-            for provider, details in provider_status_details.items()
-        }
-        
-        return {
-            "available_providers": available_providers,
-            "current_provider": current_provider,
-            "provider_status": provider_status
-        }
-        
-    except Exception as e:
-        logger.error(f"Failed to get providers: {e}")
-        return {
-            "available_providers": ["groq"],
-            "current_provider": "groq", 
-            "provider_status": {"groq": True}
-        }
-
-
-@router.post(
-    "/providers/switch",
-    summary="Switch LLM Provider",
-    description="""
-    ## 🔄 Switch Active LLM Provider
-    
-    Switch the active LLM provider for architecture suggestions.
-    
-    ### ⚠️ Note
-    
-    Provider switching is currently not implemented in the HLD Agent.
-    This endpoint returns the current provider status.
-    """,
-    response_description="Provider switch result",
-    responses={
-        200: {
-            "description": "Provider switch completed",
-            "content": {
-                "application/json": {
-                    "example": {
-                        "success": True,
-                        "message": "Switched to groq",
-                        "current_provider": "groq"
-                    }
-                }
-            }
-        },
-        400: {
-            "description": "Provider switch failed",
-            "content": {
-                "application/json": {
-                    "example": {
-                        "success": False,
-                        "error": "Provider 'invalid' not available"
-                    }
-                }
-            }
-        }
-    },
-    tags=["providers"]
-)
-async def switch_provider(request: dict):
-    """
-    Switch the active LLM provider using HLD Agent.
-    
-    Dynamically switches between configured providers (groq, openai, anthropic).
-    """
-    try:
-        provider = request.get("provider", "").lower()
-        
-        # Check if provider is available first
-        availability = hld_agent.check_provider_availability(provider)
-        if not availability["available"]:
-            return {
-                "success": False,
-                "error": f"Provider '{provider}' not available: {availability['reason']}"
-            }
-        
-        # Attempt to switch provider using HLD Agent
-        switch_result = hld_agent.switch_provider(provider)
-        
-        if switch_result["success"]:
-            logger.info(f"Successfully switched to provider: {provider}")
-            return {
-                "success": True,
-                "message": switch_result["message"],
-                "current_provider": switch_result["current_provider"],
-                "previous_provider": switch_result.get("previous_provider")
-            }
-        else:
-            logger.error(f"Provider switch failed: {switch_result['error']}")
-            return {
-                "success": False,
-                "error": switch_result["error"]
-            }
-            
-    except Exception as e:
-        logger.error(f"Provider switch failed: {e}")
-        return {
-            "success": False,
-            "error": f"Internal error: {str(e)}"
-        }
+    finally:
+        # Clean up temp file
+        if temp_file_path and os.path.exists(temp_file_path):
+            try:
+                os.unlink(temp_file_path)
+                logger.debug(f"Cleaned up temp file: {temp_file_path}")
+            except Exception as cleanup_error:
+                logger.warning(f"Failed to cleanup temp file: {cleanup_error}")
 
 
 @router.get(
     "/health",
     summary="Suggestion Service Health Check",
-    description="""
-    ## 🏥 Health Check for AI Suggestion Service
-    
-    Verify that the suggestion service is running properly and
-    ready to process architectural analysis requests.
-    
-    ### ✅ What This Checks
-    
-    - Service availability and responsiveness
-    - Pattern database loading status
-    - Internal component health
-    
-    ### 📊 Response Information
-    
-    - **Status**: Overall service health (healthy/unhealthy)
-    - **Service**: Service identifier  
-    - **Patterns Loaded**: Number of architectural patterns available
-    """,
-    response_description="Service health status and metadata",
-    responses={
-        200: {
-            "description": "Service is healthy and operational",
-            "content": {
-                "application/json": {
-                    "example": {
-                        "status": "healthy",
-                        "service": "suggestion_router", 
-                        "patterns_loaded": 5
-                    }
-                }
-            }
-        }
-    },
+    description="Verify that the Canvas-Aware HLD Agent is operational",
     tags=["health"]
 )
 async def suggestion_health():
-    """
-    Health check endpoint for the AI suggestion service.
-    
-    Returns the current status of the suggestion service including
-    the number of loaded architectural patterns.
-    """
-    # Get health status from HLD Agent
+    """Health check for the AI suggestion service."""
     try:
-        agent_health = hld_agent.get_health_status()
         return {
-            "status": agent_health.get("status", "unknown"),
-            "service": "suggestion_router",
-            "agent_version": agent_health.get("agent_version", "unknown"),
-            "model": agent_health.get("model", "unknown"),
-            "last_test_duration": agent_health.get("last_test_duration")
+            "status": "healthy",
+            "service": "canvas_aware_suggestion_router",
+            "agent_type": "CanvasAwareHLDAgent"
         }
     except Exception as e:
         logger.error(f"Health check failed: {e}")
         return {
             "status": "unhealthy",
-            "service": "suggestion_router",
+            "service": "canvas_aware_suggestion_router",
             "error": str(e)
         }

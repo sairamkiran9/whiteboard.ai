@@ -348,3 +348,4 @@ By following this ruleset:
 
 > **Store this file** as `/docs/claude.md` and **version-control it** to enforce team-wide consistency.
 
+- use langgraph and langchain inbuilt or library methods, dont' implement from scratch

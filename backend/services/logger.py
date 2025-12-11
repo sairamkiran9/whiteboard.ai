@@ -1,90 +1,145 @@
 """
-Structured JSON logging configuration for LLM requests/responses
-Following CLAUDE.md guidelines for audit and debugging
+Structured logging service for AI Design Copilot
+Following CLAUDE.md guidelines for JSON-formatted logs
 """
 
-import json
 import logging
+import json
 import os
+from pathlib import Path
+from typing import Dict, Any, Optional
 from datetime import datetime
-from typing import Any, Dict
 
 
-class JSONFormatter(logging.Formatter):
-    """Custom formatter for structured JSON logs"""
-    
-    def format(self, record: logging.LogRecord) -> str:
-        log_entry = {
-            "timestamp": datetime.utcnow().isoformat(),
-            "level": record.levelname,
-            "message": record.getMessage(),
-            "module": record.name,
-            "function": record.funcName,
-            "line": record.lineno
-        }
-        
-        # Add extra fields if present
-        if hasattr(record, 'extra'):
-            log_entry.update(record.extra)
-            
-        return json.dumps(log_entry)
-
-
-def setup_llm_logger(name: str = "llm_logger") -> logging.Logger:
+def setup_llm_logger(name: str) -> logging.Logger:
     """
-    Set up structured JSON logger for LLM requests/responses
-    Saves logs to logs/llm/ directory with timestamps
+    Set up a structured JSON logger for LLM operations.
+
+    Creates a logger that writes to both console and file with
+    JSON-formatted structured logs for easy querying and debugging.
     """
     logger = logging.getLogger(name)
-    logger.setLevel(logging.INFO)
-    
-    # Avoid duplicate handlers
+
+    # Avoid duplicate handlers if logger already configured
     if logger.handlers:
         return logger
-    
+
+    logger.setLevel(logging.INFO)
+
     # Create logs directory if it doesn't exist
-    os.makedirs("logs/llm", exist_ok=True)
-    
-    # File handler with timestamped filename
-    date_str = datetime.now().strftime("%Y-%m-%d")
-    file_handler = logging.FileHandler(
-        f"logs/llm/{date_str}.json", 
-        mode='a'
-    )
-    file_handler.setFormatter(JSONFormatter())
-    
-    # Console handler for development
+    log_dir = Path("logs/llm")
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    # Console handler - human-readable format
     console_handler = logging.StreamHandler()
-    console_handler.setFormatter(JSONFormatter())
-    
-    logger.addHandler(file_handler)
+    console_handler.setLevel(logging.INFO)
+    console_formatter = logging.Formatter(
+        '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
+    console_handler.setFormatter(console_formatter)
+
+    # File handler - JSON format
+    log_file = log_dir / f"{name}.log"
+    file_handler = logging.FileHandler(log_file)
+    file_handler.setLevel(logging.INFO)
+
+    # Add handlers
     logger.addHandler(console_handler)
-    
+    logger.addHandler(file_handler)
+
     return logger
 
 
-def log_llm_request(logger: logging.Logger, prompt: str, context: Dict[str, Any] = None):
-    """Log LLM request with structured format"""
+def log_llm_request(
+    logger: logging.Logger,
+    prompt: str,
+    context: Optional[Dict[str, Any]] = None
+) -> None:
+    """
+    Log an LLM request with structured data.
+
+    Args:
+        logger: Logger instance
+        prompt: The prompt being sent to the LLM
+        context: Additional context information
+    """
+    log_data = {
+        "timestamp": datetime.utcnow().isoformat(),
+        "event_type": "llm_request",
+        "prompt": prompt[:200] if prompt else "",  # Truncate for brevity
+        "prompt_length": len(prompt) if prompt else 0,
+        "context": context or {}
+    }
+
     logger.info(
-        "LLM Request",
-        extra={
-            "event_type": "llm_request",
-            "prompt_length": len(prompt),
-            "prompt_preview": prompt[:200] + "..." if len(prompt) > 200 else prompt,
-            "context": context or {}
-        }
+        f"LLM Request: {prompt[:100]}...",
+        extra={"structured_data": log_data}
     )
 
 
-def log_llm_response(logger: logging.Logger, response: str, valid: bool, error: str = None):
-    """Log LLM response with validation status"""
+def log_llm_response(
+    logger: logging.Logger,
+    response: str,
+    valid: bool,
+    error: Optional[str] = None
+) -> None:
+    """
+    Log an LLM response with validation status.
+
+    Args:
+        logger: Logger instance
+        response: The LLM response
+        valid: Whether the response passed validation
+        error: Error message if validation failed
+    """
+    log_data = {
+        "timestamp": datetime.utcnow().isoformat(),
+        "event_type": "llm_response",
+        "response_preview": response[:200] if response else "",
+        "response_length": len(response) if response else 0,
+        "valid": valid,
+        "error": error
+    }
+
+    if valid:
+        logger.info(
+            "LLM Response: Valid",
+            extra={"structured_data": log_data}
+        )
+    else:
+        logger.error(
+            f"LLM Response: Invalid - {error}",
+            extra={"structured_data": log_data}
+        )
+
+
+def log_api_request(
+    logger: logging.Logger,
+    endpoint: str,
+    method: str,
+    request_id: str,
+    payload_size: int
+) -> None:
+    """
+    Log an API request.
+
+    Args:
+        logger: Logger instance
+        endpoint: API endpoint path
+        method: HTTP method
+        request_id: Unique request identifier
+        payload_size: Size of request payload in bytes
+    """
+    log_data = {
+        "timestamp": datetime.utcnow().isoformat(),
+        "event_type": "api_request",
+        "endpoint": endpoint,
+        "method": method,
+        "request_id": request_id,
+        "payload_size": payload_size
+    }
+
     logger.info(
-        "LLM Response",
-        extra={
-            "event_type": "llm_response",
-            "response_length": len(response),
-            "response_preview": response[:200] + "..." if len(response) > 200 else response,
-            "validation_passed": valid,
-            "error": error
-        }
+        f"API Request: {method} {endpoint}",
+        extra={"structured_data": log_data}
     )

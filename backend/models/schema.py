@@ -148,23 +148,49 @@ class Suggestion(BaseModel):
 class SuggestionResponse(BaseModel):
     """
     Complete AI response containing architectural suggestions and reasoning.
-    
+
     This is the main response format following CLAUDE.md specifications,
     providing structured suggestions with explanations and references.
     """
     suggestion: Optional[Suggestion] = Field(
-        None, 
+        None,
         description="AI-generated architectural suggestion, or null if no suggestion is appropriate"
     )
     reasoning: str = Field(
-        ..., 
+        ...,
         description="Human-readable explanation for why this suggestion was made",
         example="Added a cache layer to improve database read performance and reduce latency for frequently accessed data."
     )
     reference: Optional[str] = Field(
-        None, 
+        None,
         description="URL to documentation or best practices related to this suggestion",
         example="https://aws.amazon.com/caching/"
+    )
+    excalidraw_elements: Optional[List[Dict[str, Any]]] = Field(
+        None,
+        description="Ready-to-render Excalidraw elements for canvas integration (rectangles with positions and ghost styling)",
+        example=[{
+            "type": "rectangle",
+            "id": "ghost-cache-1",
+            "x": 400,
+            "y": 220,
+            "width": 150,
+            "height": 80,
+            "strokeColor": "#0066cc",
+            "strokeStyle": "dashed",
+            "opacity": 60,
+            "label": {"text": "Redis Cache?"}
+        }]
+    )
+    metadata: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Additional metadata about the analysis (component count, confidence, priority)",
+        example={
+            "confidence": 0.85,
+            "priority": "high",
+            "canvas_hash": "abc123",
+            "component_count": 5
+        }
     )
     
     class Config:
@@ -173,7 +199,7 @@ class SuggestionResponse(BaseModel):
                 "suggestion": {
                     "nodes": [
                         {
-                            "type": "cache", 
+                            "type": "cache",
                             "label": "Redis Cache",
                             "id": "redis-cache-1"
                         }
@@ -181,13 +207,33 @@ class SuggestionResponse(BaseModel):
                     "edges": [
                         {
                             "from": "web-server-1",
-                            "to": "redis-cache-1", 
+                            "to": "redis-cache-1",
                             "type": "reads-from"
                         }
                     ]
                 },
                 "reasoning": "Added a cache layer to improve database read performance and reduce latency for frequently accessed data.",
-                "reference": "https://aws.amazon.com/caching/"
+                "reference": "https://aws.amazon.com/caching/",
+                "excalidraw_elements": [
+                    {
+                        "type": "rectangle",
+                        "id": "ghost-redis-cache-1",
+                        "x": 400,
+                        "y": 220,
+                        "width": 150,
+                        "height": 80,
+                        "strokeColor": "#0066cc",
+                        "strokeStyle": "dashed",
+                        "opacity": 60,
+                        "label": {"text": "Redis Cache?"}
+                    }
+                ],
+                "metadata": {
+                    "confidence": 0.85,
+                    "priority": "high",
+                    "canvas_hash": "a1b2c3d4",
+                    "component_count": 5
+                }
             }
         }
     

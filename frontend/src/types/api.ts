@@ -43,10 +43,18 @@ export interface SuggestionResponse {
   suggestion: Suggestion | null;
   reasoning: string;
   reference: string | null;
+  excalidraw_elements?: any[] | null;  // Ready-to-render ghost elements
+  metadata?: {
+    confidence?: number;
+    priority?: string;
+    canvas_hash?: string;
+    component_count?: number;
+    suggestion_count?: number;
+    [key: string]: any;
+  } | null;
 }
 
 export interface CanvasRequest {
-  session_id?: string;
   canvas_elements: ExcalidrawElement[];
   recent_changes?: any[];
   context?: Record<string, any>;
