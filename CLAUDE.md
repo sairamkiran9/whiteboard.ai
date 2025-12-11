@@ -3,6 +3,10 @@
 This document defines strict guidelines for integrating Claude (or similar LLMs) into a **Python-based system design copilot**.
 It ensures **predictable, safe, and context-aware outputs** while preventing hallucinations, insecure suggestions, or architectural errors.
 
+> **📁 Module-Specific Documentation:**
+> - **Backend:** See [`backend/CLAUDE.md`](backend/CLAUDE.md) for backend-specific rules (Excalidraw parsing, multi-agent system, FastAPI)
+> - **Backend Plan:** See [`backend/PLAN.md`](backend/PLAN.md) for implementation roadmap and architecture
+
 ---
 
 ## **I. General Principles**
