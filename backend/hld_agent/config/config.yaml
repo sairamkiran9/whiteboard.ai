@@ -1,7 +1,7 @@
 llm:
   provider: "groq"
   models:
-    primary: "gemma2-9b-it"
+    primary: "openai/gpt-oss-120b"
     fallback: "deepseek-r1-distill-llama-70b"
   temperature: 0
   max_iterations: 6

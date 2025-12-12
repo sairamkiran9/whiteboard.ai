@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from hld_agent.parsers.excalidraw_parser import ExcalidrawParser
 from hld_agent.models import ArchitectureGraph, AgentResponse, ComponentSuggestion
+from hld_agent.config.settings import load_config
 
 # Import existing HLD agent components
 from pydantic import BaseModel, Field
@@ -24,9 +25,13 @@ import os
 from dotenv import load_dotenv
 from groq import Groq
 import instructor
+import logging
 
 # Load environment
 load_dotenv()
+
+# Configure logger
+logger = logging.getLogger(__name__)
 
 # ==================== Structured Output Models (using Instructor) ====================
 
@@ -38,6 +43,16 @@ class ArchitectureSuggestion(BaseModel):
     is_complete: bool = Field(False, description="Whether the architecture is sufficient")
 
 
+# ==================== Prompt Constants ====================
+
+SYSTEM_MESSAGE = """You are a distributed systems architect that must return a structured ArchitectureSuggestion object. Follow these constraints:
+- Always base analysis only on the provided graph summary and context
+- Never invent component names that cannot reasonably exist in a distributed system architecture
+- Use the following reasoning order: context analysis, missing element identification, next component justification, trade off evaluation
+- Only set is_complete to true if compute tier, persistence tier, networking tier, ingress, auth (if required), caching or queueing (if needed), and observability are sufficiently represented
+- If the architecture sequence is empty you must not guess. Set next_component to null and is_complete to false"""
+
+
 # ==================== LLM Integration with Instructor ====================
 
 # Use Instructor for structured outputs (same as existing hld_agent.py)
@@ -46,6 +61,30 @@ client = instructor.from_groq(
     mode=instructor.Mode.JSON
 )
 
+
+def get_model_name() -> str:
+    """
+    Get LLM model name with priority:
+    1. Environment variable HLD_AGENT_MODEL (highest priority)
+    2. Config file primary model
+    3. Safe default fallback (openai/gpt-oss-120b)
+    """
+    # Check environment variable override
+    env_model = os.environ.get("HLD_AGENT_MODEL")
+    if env_model:
+        logger.info(f"Using model from HLD_AGENT_MODEL: {env_model}")
+        return env_model
+
+    # Load from config
+    try:
+        config = load_config()
+        model = config.get("llm", {}).get("models", {}).get("primary", "openai/gpt-oss-120b")
+        logger.info(f"Using model from config: {model}")
+        return model
+    except Exception as e:
+        logger.warning(f"Failed to load config, using default model: {e}")
+        return "openai/gpt-oss-120b"  # Safe default
+
 def call_groq_structured(
     current_sequence: str,
     context: str,
@@ -53,50 +92,51 @@ def call_groq_structured(
 ) -> ArchitectureSuggestion:
     """Call Groq LLM with Instructor for structured output"""
 
-    # Build enhanced prompt with canvas context
+    # Build compact prompt with graph summary
     incomplete = graph.get_incomplete_connections()
-    incomplete_info = ""
-    if incomplete:
-        incomplete_info = "\n⚠️  Incomplete flows detected:\n"
-        for conn in incomplete:
-            from_comp = graph.get_component_by_id(conn.from_component)
-            if from_comp:
-                incomplete_info += f"  - {from_comp.name} → ??? (needs target component)\n"
 
-    user_prompt = f"""Context: {context}
+    user_prompt = f"""Graph summary
+Total components count: {len(graph.components)}
+Component types: {', '.join(set(c.type for c in graph.components)) if graph.components else 'None'}
+Layer count: {len(graph.layers.keys())}
+Incomplete connections: {len(incomplete)}
+Incomplete from: {[conn.from_component for conn in incomplete] if incomplete else 'None'}
+Sequence: {current_sequence or 'Empty'}
 
-Current Canvas State:
-- Total components: {len(graph.components)}
-- Component types: {', '.join(set(c.type for c in graph.components))}
-- Incomplete connections: {len(incomplete)}
-- Detected layers: {', '.join(graph.layers.keys())}
-{incomplete_info}
+Context
+{context}
 
-Current architecture sequence:
-{current_sequence}
-
-Task: Suggest the next most logical component to add to this architecture.
-
-Rules:
-1. If there are incomplete arrows, prioritize components that complete them
-2. Follow distributed systems best practices
-3. Consider scalability, reliability, and security
-4. Set is_complete=True only when the architecture is sufficient for production
-"""
+Task
+Identify the next required architectural component based strictly on this graph state.
+Apply reasoning in the required order.
+Do not invent new terminology or imaginary capabilities.
+Produce a complete ArchitectureSuggestion object."""
 
     try:
         response = client.chat.completions.create(
-            model="openai/gpt-oss-120b",
+            model=get_model_name(),
             response_model=ArchitectureSuggestion,
             messages=[
-                {"role": "system", "content": "You are a distributed systems architect. Analyze the canvas and suggest the next component."},
+                {"role": "system", "content": SYSTEM_MESSAGE},
                 {"role": "user", "content": user_prompt}
             ],
             temperature=0.1,
         )
+
+        # Duplicate detection: check if suggested component already exists
+        if response.next_component:
+            existing_names = [c.name.lower() for c in graph.components]
+            if response.next_component.lower() in existing_names:
+                logger.warning(
+                    f"LLM suggested duplicate component: {response.next_component}. "
+                    f"Setting next_component to null and is_complete to false."
+                )
+                response.next_component = None
+                response.is_complete = False
+
         return response
     except Exception as e:
-        print(f"❌ LLM call failed: {e}")
+        logger.error(f"LLM call failed: {e}", exc_info=True)
         # Return safe fallback
         return ArchitectureSuggestion(
             next_component=None,

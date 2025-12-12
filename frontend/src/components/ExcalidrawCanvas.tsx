@@ -25,6 +25,7 @@ export default function ExcalidrawCanvas({
   const [lastElements, setLastElements] = useState<readonly ExcalidrawElement[]>([]);
   const [suggestions, setSuggestions] = useState<SuggestionResponse | null>(null);
   const [showToast, setShowToast] = useState(false);
+  const [ghostElementIds, setGhostElementIds] = useState<string[]>([]);
 
   // Ref to prevent too frequent API calls
   const debounceTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -106,6 +107,13 @@ export default function ExcalidrawCanvas({
         // If we have Excalidraw elements in the response, add them as ghost elements
         if (suggestion.excalidraw_elements && suggestion.excalidraw_elements.length > 0 && excalidrawAPI) {
           console.log('Adding ghost elements to canvas:', suggestion.excalidraw_elements);
+
+          // Track ghost element IDs
+          const ghostIds = suggestion.excalidraw_elements
+            .filter(el => el.type === 'rectangle' && el.id.startsWith('ghost-'))
+            .map(el => el.id);
+          setGhostElementIds(ghostIds);
+
           // Add ghost elements to the canvas
           const currentElements = excalidrawAPI.getSceneElements();
           excalidrawAPI.updateScene({
@@ -125,10 +133,112 @@ export default function ExcalidrawCanvas({
 
   }, [lastElements, onSuggestionReceived, onError, excalidrawAPI]);
 
+  // Convert ghost element to real element (on Tab press)
+  const acceptGhostSuggestion = useCallback(() => {
+    if (!excalidrawAPI || ghostElementIds.length === 0) {
+      return;
+    }
+
+    console.log('Accepting ghost suggestion:', ghostElementIds);
+
+    const currentElements = excalidrawAPI.getSceneElements();
+    const updatedElements = currentElements.map((el: any) => {
+      // Check if this is a ghost element or its text
+      const isGhostRect = ghostElementIds.includes(el.id);
+      const isGhostText = el.containerId && ghostElementIds.includes(el.containerId);
+
+      if (isGhostRect || isGhostText) {
+        // Convert ghost to real element
+        const updates: any = {
+          ...el,
+          strokeStyle: 'solid',  // Remove dashed stroke
+          opacity: 100,  // Full opacity
+          groupIds: el.groupIds?.filter((id: string) => id !== 'ai-suggestion') || [],  // Remove AI suggestion group
+          customData: undefined,  // Remove ghost metadata
+        };
+
+        // Remove question mark from text (handle both text and originalText fields)
+        if (el.text && el.text.endsWith('?')) {
+          updates.text = el.text.slice(0, -1);
+        }
+        if (el.originalText && el.originalText.endsWith('?')) {
+          updates.originalText = el.originalText.slice(0, -1);
+        }
+
+        return updates;
+      }
+      return el;
+    });
+
+    excalidrawAPI.updateScene({
+      elements: updatedElements
+    });
+
+    // Clear ghost tracking
+    setGhostElementIds([]);
+    setShowToast(false);  // Dismiss toast
+    console.log('Ghost suggestion accepted and converted to real element');
+  }, [excalidrawAPI, ghostElementIds]);
+
+  // Remove ghost element (on Esc press)
+  const rejectGhostSuggestion = useCallback(() => {
+    if (!excalidrawAPI || ghostElementIds.length === 0) {
+      return;
+    }
+
+    console.log('Rejecting ghost suggestion:', ghostElementIds);
+
+    const currentElements = excalidrawAPI.getSceneElements();
+    const filteredElements = currentElements.filter((el: any) => {
+      // Remove ghost rectangles
+      if (ghostElementIds.includes(el.id)) {
+        return false;
+      }
+      // Remove ghost text labels
+      if (el.containerId && ghostElementIds.includes(el.containerId)) {
+        return false;
+      }
+      return true;
+    });
+
+    excalidrawAPI.updateScene({
+      elements: filteredElements
+    });
+
+    // Clear ghost tracking
+    setGhostElementIds([]);
+    setShowToast(false);  // Dismiss toast
+    console.log('Ghost suggestion rejected and removed');
+  }, [excalidrawAPI, ghostElementIds]);
+
+  // Keyboard event handler for Tab (accept) and Esc (reject)
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      // Only handle if there are ghost elements
+      if (ghostElementIds.length === 0) {
+        return;
+      }
+
+      if (event.key === 'Tab') {
+        event.preventDefault();  // Prevent default Tab behavior
+        acceptGhostSuggestion();
+      } else if (event.key === 'Escape') {
+        event.preventDefault();
+        rejectGhostSuggestion();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [ghostElementIds, acceptGhostSuggestion, rejectGhostSuggestion]);
+
   // Health check disabled to reduce network calls
   // Health checks are now handled by the main app component
   useEffect(() => {
-    console.log('ExcalidrawCanvas initialized - health checks disabled for reduced network traffic');
+    console.log('ExcalidrawCanvas initialized - Tab to accept, Esc to reject suggestions');
   }, []);
 
   return (
@@ -177,16 +287,29 @@ export default function ExcalidrawCanvas({
               </p>
 
               {suggestions.suggestion?.nodes && suggestions.suggestion.nodes.length > 0 && (
-                <div className="flex flex-wrap gap-1">
-                  {suggestions.suggestion.nodes.map((node, idx) => (
-                    <span
-                      key={idx}
-                      className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-50 text-blue-700 border border-blue-200"
-                    >
-                      {node.label}
-                    </span>
-                  ))}
-                </div>
+                <>
+                  <div className="flex flex-wrap gap-1 mb-2">
+                    {suggestions.suggestion.nodes.map((node, idx) => (
+                      <span
+                        key={idx}
+                        className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-50 text-blue-700 border border-blue-200"
+                      >
+                        {node.label}
+                      </span>
+                    ))}
+                  </div>
+
+                  {/* Keyboard hints */}
+                  {ghostElementIds.length > 0 && (
+                    <div className="flex items-center gap-3 text-xs text-gray-500 pt-2 border-t border-gray-100">
+                      <kbd className="px-1.5 py-0.5 bg-gray-100 border border-gray-300 rounded text-gray-700 font-mono">Tab</kbd>
+                      <span>to accept</span>
+                      <span className="text-gray-300">|</span>
+                      <kbd className="px-1.5 py-0.5 bg-gray-100 border border-gray-300 rounded text-gray-700 font-mono">Esc</kbd>
+                      <span>to reject</span>
+                    </div>
+                  )}
+                </>
               )}
             </div>
           </div>

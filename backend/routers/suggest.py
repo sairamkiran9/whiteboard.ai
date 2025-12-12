@@ -49,39 +49,147 @@ def _convert_to_excalidraw_canvas(canvas_elements: List[Dict[str, Any]]) -> Dict
     }
 
 
-def _create_ghost_excalidraw_elements(suggestions: List[ComponentSuggestion]) -> List[Dict[str, Any]]:
+def _extract_canvas_theme(canvas_elements: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Extract common theme from existing canvas elements.
+
+    Analyzes rectangles to find the most common colors, stroke styles, etc.
+    Returns a theme object that can be applied to ghost elements.
+    """
+    theme = {
+        "strokeColor": "#1e1e1e",  # Default
+        "backgroundColor": "transparent",
+        "strokeWidth": 1,
+        "fillStyle": "hachure",
+        "roughness": 1,
+        "roundness": {"type": 3}
+    }
+
+    # Extract colors from existing rectangles
+    rectangles = [el for el in canvas_elements if el.get("type") == "rectangle"]
+
+    if rectangles:
+        # Get most common stroke color
+        stroke_colors = [r.get("strokeColor", "#1e1e1e") for r in rectangles if r.get("strokeColor")]
+        if stroke_colors:
+            # Use the first non-default color, or most common
+            theme["strokeColor"] = stroke_colors[0]
+
+        # Get most common background color
+        bg_colors = [r.get("backgroundColor", "transparent") for r in rectangles if r.get("backgroundColor")]
+        if bg_colors:
+            theme["backgroundColor"] = bg_colors[0]
+
+        # Get stroke width
+        stroke_widths = [r.get("strokeWidth", 1) for r in rectangles]
+        if stroke_widths:
+            theme["strokeWidth"] = stroke_widths[0]
+
+        # Get fill style
+        fill_styles = [r.get("fillStyle", "hachure") for r in rectangles]
+        if fill_styles:
+            theme["fillStyle"] = fill_styles[0]
+
+        # Get roundness
+        if rectangles[0].get("roundness"):
+            theme["roundness"] = rectangles[0].get("roundness")
+
+    return theme
+
+
+def _calculate_smart_position(
+    canvas_elements: List[Dict[str, Any]],
+    suggestion: ComponentSuggestion
+) -> Dict[str, float]:
+    """
+    Calculate smart position for suggested component based on canvas flow.
+
+    Strategy:
+    1. If suggestion connects to an existing component, place it adjacent
+    2. Follow left-to-right flow (place to the right of rightmost element)
+    3. Respect spacing (200px horizontal, 150px vertical)
+    4. Avoid overlaps
+    """
+    default_position = {"x": 400, "y": 220}
+
+    if not canvas_elements:
+        return default_position
+
+    # Filter rectangles only
+    rectangles = [el for el in canvas_elements
+                  if el.get("type") == "rectangle" and not el.get("id", "").startswith("ghost-")]
+
+    if not rectangles:
+        return default_position
+
+    # If suggestion connects to specific component, place it adjacent
+    if suggestion.connects_to and len(suggestion.connects_to) > 0:
+        target_id = suggestion.connects_to[0]
+        target_element = next((el for el in rectangles if el.get("id") == target_id), None)
+
+        if target_element:
+            # Place to the right of the target element
+            target_x = target_element.get("x", 0)
+            target_y = target_element.get("y", 0)
+            target_width = target_element.get("width", 120)
+
+            return {
+                "x": target_x + target_width + 200,  # 200px spacing
+                "y": target_y
+            }
+
+    # Otherwise, place to the right of the rightmost element
+    rightmost = max(rectangles, key=lambda el: el.get("x", 0) + el.get("width", 120))
+    rightmost_x = rightmost.get("x", 0)
+    rightmost_width = rightmost.get("width", 120)
+    rightmost_y = rightmost.get("y", 220)
+
+    return {
+        "x": rightmost_x + rightmost_width + 200,  # 200px to the right
+        "y": rightmost_y  # Same vertical position
+    }
+
+
+def _create_ghost_excalidraw_elements(
+    suggestions: List[ComponentSuggestion],
+    canvas_elements: List[Dict[str, Any]]
+) -> List[Dict[str, Any]]:
     """
     Create Excalidraw-compatible ghost elements from ComponentSuggestions.
 
     Generates semi-transparent dashed rectangles with labels at suggested positions.
+    Matches theme of existing canvas elements.
     """
     ghost_elements = []
 
+    # Extract theme from existing elements
+    theme = _extract_canvas_theme(canvas_elements)
+
     for suggestion in suggestions:
-        if not suggestion.position_hint:
-            continue
+        # Calculate smart position
+        position = _calculate_smart_position(canvas_elements, suggestion)
 
         # Create ghost rectangle
         element_id = f"ghost-{uuid.uuid4().hex[:8]}"
 
-        # Rectangle element
+        # Rectangle element with theme matching
         ghost_rect = {
             "id": element_id,
             "type": "rectangle",
-            "x": suggestion.position_hint.get("x", 400),
-            "y": suggestion.position_hint.get("y", 220),
+            "x": position.get("x", 400),
+            "y": position.get("y", 220),
             "width": 150,
             "height": 80,
             "angle": 0,
-            "strokeColor": "#0066cc",
-            "backgroundColor": "#e7f3ff",
-            "fillStyle": "hachure",
-            "strokeWidth": 2,
-            "strokeStyle": "dashed",
-            "roughness": 1,
-            "opacity": 60,
-            "groupIds": [],
-            "roundness": {"type": 3},
+            "strokeColor": theme["strokeColor"],  # Match existing theme
+            "backgroundColor": theme["backgroundColor"] if theme["backgroundColor"] != "transparent" else "#f0f0f0",
+            "fillStyle": theme["fillStyle"],
+            "strokeWidth": theme["strokeWidth"],
+            "strokeStyle": "dashed",  # Ghost indicator
+            "roughness": theme["roughness"],
+            "opacity": 60,  # Semi-transparent for ghost effect
+            "groupIds": ["ai-suggestion"],  # Mark as AI suggestion
+            "roundness": theme["roundness"],
             "seed": 12345,
             "version": 1,
             "versionNonce": 1,
@@ -89,7 +197,12 @@ def _create_ghost_excalidraw_elements(suggestions: List[ComponentSuggestion]) ->
             "boundElements": [{"type": "text", "id": f"{element_id}-text"}],
             "updated": 1,
             "link": None,
-            "locked": False
+            "locked": False,
+            "customData": {
+                "isGhost": True,  # Mark as ghost for frontend
+                "suggestionId": suggestion.component_name,
+                "canAccept": True  # User can press Tab to accept
+            }
         }
 
         # Text label
@@ -135,12 +248,15 @@ def _create_ghost_excalidraw_elements(suggestions: List[ComponentSuggestion]) ->
     return ghost_elements
 
 
-def _convert_agent_response_to_suggestion(agent_response: AgentResponse) -> SuggestionResponse:
+def _convert_agent_response_to_suggestion(
+    agent_response: AgentResponse,
+    canvas_elements: List[Dict[str, Any]]
+) -> SuggestionResponse:
     """
     Convert CanvasAwareHLDAgent's AgentResponse to API SuggestionResponse.
 
     Transforms ComponentSuggestion objects into simplified Node/Edge format
-    and generates Excalidraw-ready ghost elements.
+    and generates Excalidraw-ready ghost elements with smart positioning and theme matching.
     """
     # Check if we have any suggestions
     if not agent_response.suggestions or len(agent_response.suggestions) == 0:
@@ -185,8 +301,11 @@ def _convert_agent_response_to_suggestion(agent_response: AgentResponse) -> Sugg
         edges=suggested_edges
     )
 
-    # Generate Excalidraw ghost elements
-    excalidraw_elements = _create_ghost_excalidraw_elements(agent_response.suggestions[:2])  # Max 2 suggestions
+    # Generate Excalidraw ghost elements with smart positioning and theme matching
+    excalidraw_elements = _create_ghost_excalidraw_elements(
+        agent_response.suggestions[:1],  # One suggestion at a time
+        canvas_elements
+    )
 
     # Build metadata
     metadata = {
@@ -524,8 +643,11 @@ async def suggest_architecture(request: CanvasRequest) -> SuggestionResponse:
         logger.info(f"Analyzing canvas with context: {context_str}")
         agent_response = canvas_agent.analyze_canvas(temp_file_path, context_str)
 
-        # Convert to API response format
-        suggestion_response = _convert_agent_response_to_suggestion(agent_response)
+        # Convert to API response format with smart positioning and theme matching
+        suggestion_response = _convert_agent_response_to_suggestion(
+            agent_response,
+            request.canvas_elements  # Pass canvas elements for theme extraction and positioning
+        )
 
         # Log successful response
         log_llm_response(
